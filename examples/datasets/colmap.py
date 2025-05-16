@@ -127,8 +127,12 @@ class Parser:
             elif type_ == 5 or type_ == "OPENCV_FISHEYE":
                 params = np.array([cam.k1, cam.k2, cam.k3, cam.k4], dtype=np.float32)
                 camtype = "fisheye"
+            elif type_ == 10 or type_ == "THIN_PRISM_FISHEYE":
+                params = np.array([cam.k1, cam.k2, 
+                cam.p1, cam.p2, cam.k3, cam.k4, cam.sx1, cam.sy1], dtype=np.float32)
+                camtype = "thin_prism_fisheye"
             assert (
-                camtype == "perspective" or camtype == "fisheye"
+                camtype == "perspective" or camtype == "fisheye" or camtype == "thin_prism_fisheye"
             ), f"Only perspective and fisheye cameras are supported, got {type_}"
 
             params_dict[camera_id] = params
@@ -327,6 +331,59 @@ class Parser:
                 y_min, y_max = y_indices.min(), y_indices.max() + 1
                 x_min, x_max = x_indices.min(), x_indices.max() + 1
                 mask = mask[y_min:y_max, x_min:x_max]
+                K_undist = K.copy()
+                K_undist[0, 2] -= x_min
+                K_undist[1, 2] -= y_min
+                roi_undist = [x_min, y_min, x_max - x_min, y_max - y_min]
+            elif camtype == "thin_prism_fisheye":
+                # unpack
+                k1, k2, p1, p2, k3, k4, s1, s3 = params.astype(np.float32)
+
+                fx, fy = K[0, 0], K[1, 1]
+                cx, cy = K[0, 2], K[1, 2]
+
+                # pixel grid -> normalised coords
+                grid_x, grid_y = np.meshgrid(
+                    np.arange(width,  dtype=np.float32),
+                    np.arange(height, dtype=np.float32),
+                    indexing="xy",
+                )
+                x = (grid_x - cx) / fx
+                y = (grid_y - cy) / fy
+                r2 = x * x + y * y
+                r4 = r2 * r2
+                r6 = r4 * r2
+                r8 = r4 * r4
+
+                # 1. radial
+                radial = 1.0 + k1 * r2 + k2 * r4 + k3 * r6 + k4 * r8
+                xr = x * radial
+                yr = y * radial
+
+                # 2. tangential
+                xt = 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x)
+                yt = p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y
+
+                # 3. thin-prism  (only r² terms given)
+                xp = s1 * r2           # + s2 * r4  # if you have it
+                yp = s3 * r2           # + s4 * r4
+
+                x_dist = xr + xt + xp
+                y_dist = yr + yt + yp
+
+                mapx = (fx * x_dist + cx).astype(np.float32)
+                mapy = (fy * y_dist + cy).astype(np.float32)
+
+                # ROI / mask identical to your fisheye branch
+                mask = np.logical_and.reduce((
+                    mapx > 0, mapx < width  - 1,
+                    mapy > 0, mapy < height - 1,
+                ))
+                ys, xs = np.nonzero(mask)
+                y_min, y_max = ys.min(), ys.max() + 1
+                x_min, x_max = xs.min(), xs.max() + 1
+                mask = mask[y_min:y_max, x_min:x_max]
+
                 K_undist = K.copy()
                 K_undist[0, 2] -= x_min
                 K_undist[1, 2] -= y_min

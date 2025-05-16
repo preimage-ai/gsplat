@@ -1,16 +1,18 @@
 import viser
+import math
 from pathlib import Path
 from typing import Literal
-from typing import Tuple, Callable
+from typing import Tuple, Callable, List, Dict
 from nerfview import Viewer, RenderTabState
-
+import numpy as np
+import viser.transforms as vtf
 
 class GsplatRenderTabState(RenderTabState):
-    # non-controlable parameters
+    # non-controllable parameters
     total_gs_count: int = 0
     rendered_gs_count: int = 0
 
-    # controlable parameters
+    # existing controllable parameters
     max_sh_degree: int = 5
     near_plane: float = 1e-2
     far_plane: float = 1e2
@@ -28,22 +30,50 @@ class GsplatRenderTabState(RenderTabState):
     rasterize_mode: Literal["classic", "antialiased"] = "classic"
     camera_model: Literal["pinhole", "ortho", "fisheye"] = "pinhole"
 
+    # NEW — visibility toggle for camera frustums
+    show_cameras: bool = True
+    frustum_scale: float = 0.05
 
 class GsplatViewer(Viewer):
     """
-    Viewer for gsplat.
+    Viewer for 3-D Gaussian Splatting **with camera-frustum visualisation**.
+
+    Args
+    ----
+    server        : viser.ViserServer – the underlying server
+    render_fn     : Callable           – your callable that does the splat rendering
+    output_dir    : Path               – where screenshots / exports are saved
+    mode          : "rendering" | "training"
+    cameras       : optional list of dicts, one per image:
+                    {
+                        "fov":      float (vertical FoV in *radians*)
+                        "aspect":   float (w / h)
+                        "position": (x, y, z)
+                        "wxyz":     quaternion as (w, x, y, z)
+                    }
+                    Feel free to add extra keys; only the four above are used.
     """
 
+    # ------------------------------ INITIALISER ------------------------------ #
     def __init__(
         self,
         server: viser.ViserServer,
         render_fn: Callable,
         output_dir: Path,
         mode: Literal["rendering", "training"] = "rendering",
+        cameras: List[Dict] | None = None,
     ):
+        self._cameras: List[Dict] = cameras or []
+        self._frustum_handles: List[viser.CameraFrustumHandle] = []
+
         super().__init__(server, render_fn, output_dir, mode)
         server.gui.set_panel_label("gsplat viewer")
 
+        # draw the cameras *after* Viewer initialisation (so `server.scene` exists)
+        if self._cameras:
+            self._draw_camera_frustums()
+
+    # -------------------------- GUI / TAB INITIALISATION -------------------- #
     def _init_rendering_tab(self):
         self.render_tab_state = GsplatRenderTabState()
         self._rendering_tab_handles = {}
@@ -221,6 +251,34 @@ class GsplatViewer(Viewer):
                     self.render_tab_state.camera_model = camera_model_dropdown.value
                     self.rerender(_)
 
+                # ───── NEW VISIBILITY TOGGLE FOR FRUSTUMS ───── #
+                show_cameras_checkbox = server.gui.add_checkbox(
+                    "Show Cameras",
+                    initial_value=self.render_tab_state.show_cameras,
+                    hint="Toggle camera-frustum visualisation.",
+                )
+
+                frustum_scale_slider = server.gui.add_slider(            # ← new control
+                    "Frustum Scale",
+                    min=0.001,
+                    max=0.1,
+                    step=0.001,
+                    initial_value=self.render_tab_state.frustum_scale,
+                    hint="Size of each camera frustum (world units).",
+                )
+
+                @show_cameras_checkbox.on_update
+                def _(_) -> None:
+                    self.render_tab_state.show_cameras = show_cameras_checkbox.value
+                    for h in self._frustum_handles:
+                        h.visible = show_cameras_checkbox.value
+
+                @frustum_scale_slider.on_update
+                def _(_):
+                    self.render_tab_state.frustum_scale = frustum_scale_slider.value
+                    for h in self._frustum_handles:           # live-resize every frustum
+                        h.scale = frustum_scale_slider.value
+
         self._rendering_tab_handles.update(
             {
                 "total_gs_count_number": total_gs_count_number,
@@ -235,6 +293,8 @@ class GsplatViewer(Viewer):
                 "colormap_dropdown": colormap_dropdown,
                 "rasterize_mode_dropdown": rasterize_mode_dropdown,
                 "camera_model_dropdown": camera_model_dropdown,
+                "show_cameras_checkbox": show_cameras_checkbox,
+                "frustum_scale_slider": frustum_scale_slider,
             }
         )
         super()._populate_rendering_tab()
@@ -247,3 +307,66 @@ class GsplatViewer(Viewer):
         self._rendering_tab_handles[
             "rendered_gs_count_number"
         ].value = self.render_tab_state.rendered_gs_count
+
+    # --------------------------------------------------------------------- #
+    #                            CAMERA FRUSTUMS                            #
+    # --------------------------------------------------------------------- #
+    def _draw_camera_frustums(self) -> None:
+        scene  = self.server.scene
+        scale  = self.render_tab_state.frustum_scale      # <── use the state value
+        for i, cam in enumerate(self._cameras):
+            name = f"/cameras/cam_{i:04d}"
+
+            scene.add_frame(
+                name=name,
+                wxyz=cam["wxyz"],
+                position=cam["position"],
+                axes_length=scale * 0.04,
+                axes_radius=scale * 0.002,
+                visible=self.render_tab_state.show_cameras,
+            )
+
+            h = scene.add_camera_frustum(
+                name=f"{name}/frustum",
+                fov=cam["fov"],
+                aspect=cam["aspect"],
+                scale=scale,                           # ← here too
+                line_width=1.8,
+                color=(255, 180, 0),
+                visible=self.render_tab_state.show_cameras,
+            )
+            self._frustum_handles.append(h)
+
+# -----------------------------------------------------------------------------#
+#                        HELPER – BUILD CAMERA DICTS                           #
+# -----------------------------------------------------------------------------#
+def build_camera_dict(
+    pose_world_cam: np.ndarray,
+    width: int,
+    height: int,
+    fx: float,
+    fy: float | None = None,
+) -> Dict:
+    """
+    Convenience helper that converts COLMAP-style intrinsics & a 4×4 pose
+    into the dictionary format expected by `GsplatViewer`.
+
+    Args
+    ----
+    pose_world_cam : 4×4 ndarray – homogeneous transform (world ← cam)
+    width, height  : int         – image resolution
+    fx, fy         : focal lengths (pixels).  `fy` defaults to `fx`.
+    """
+    fy = fx if fy is None else fy
+    fov = 2 * math.atan2(height / 2.0, fy)
+    aspect = width / height
+
+    # rotation quaternion (w, x, y, z) in world frame
+    R = pose_world_cam[:3, :3]
+    t = pose_world_cam[:3, 3]
+    wxyz = vtf.SO3.from_matrix(R).wxyz  # viser’s quaternion helper
+
+    wxyz   = tuple(float(v) for v in wxyz)         # <-- cast
+    position = tuple(float(v) for v in t)        # <-- cast
+
+    return dict(fov=fov, aspect=aspect, position=position, wxyz=wxyz)

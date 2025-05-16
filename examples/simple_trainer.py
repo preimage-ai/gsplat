@@ -37,7 +37,7 @@ from gsplat.distributed import cli
 from gsplat.optimizers import SelectiveAdam
 from gsplat.rendering import rasterization
 from gsplat.strategy import DefaultStrategy, MCMCStrategy
-from gsplat_viewer import GsplatViewer, GsplatRenderTabState
+from gsplat_viewer import GsplatViewer, GsplatRenderTabState, build_camera_dict
 from nerfview import CameraState, RenderTabState, apply_float_colormap
 
 
@@ -467,6 +467,14 @@ class Runner:
         else:
             raise ValueError(f"Unknown LPIPS network: {cfg.lpips_net}")
 
+        cameras = [build_camera_dict(
+            pose_world_cam=self.parser.camtoworlds[i],
+            width=self.parser.imsize_dict[self.parser.camera_ids[i]][0],
+            height=self.parser.imsize_dict[self.parser.camera_ids[i]][1],
+            fx=self.parser.Ks_dict[self.parser.camera_ids[i]][0, 0],
+            fy=self.parser.Ks_dict[self.parser.camera_ids[i]][1, 1],
+        ) for i in range(len(self.parser.camtoworlds))]
+
         # Viewer
         if not self.cfg.disable_viewer:
             self.server = viser.ViserServer(port=cfg.port, verbose=False)
@@ -475,6 +483,7 @@ class Runner:
                 render_fn=self._viewer_render_fn,
                 output_dir=Path(cfg.result_dir),
                 mode="training",
+                cameras=cameras
             )
 
     def rasterize_splats(

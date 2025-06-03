@@ -88,6 +88,8 @@ class Parser:
         params_dict = dict()
         imsize_dict = dict()  # width, height
         mask_dict = dict()
+        masks = []
+        # mesh = o3d.io.read_triangle_mesh(os.path.join(data_dir, "mesh.obj"))
         bottom = np.array([0, 0, 0, 1]).reshape(1, 4)
         for k in imdata:
             im = imdata[k]
@@ -137,6 +139,16 @@ class Parser:
 
             params_dict[camera_id] = params
             imsize_dict[camera_id] = (cam.width // factor, cam.height // factor)
+            mask = cv2.imread(
+                os.path.join(data_dir, "masks", f"{im.name}"), 0
+            )
+            if mask is not None:
+                mask = cv2.resize(
+                    mask, (cam.width // factor, cam.height // factor), interpolation=cv2.INTER_NEAREST
+                )
+                masks.append(mask > 20)
+            else:
+                masks.append(None)
             mask_dict[camera_id] = None
         print(
             f"[Parser] {len(imdata)} images, taken by {len(set(camera_ids))} cameras."
@@ -161,6 +173,7 @@ class Parser:
         inds = np.argsort(image_names)
         image_names = [image_names[i] for i in inds]
         camtoworlds = camtoworlds[inds]
+        masks = np.array(masks)[inds]
         camera_ids = [camera_ids[i] for i in inds]
 
         # Load extended metadata. Used by Bilarf dataset.
@@ -257,6 +270,7 @@ class Parser:
         self.params_dict = params_dict  # Dict of camera_id -> params
         self.imsize_dict = imsize_dict  # Dict of camera_id -> (width, height)
         self.mask_dict = mask_dict  # Dict of camera_id -> mask
+        self.masks = masks  # np.ndarray, (num_images, height, width)
         self.points = points  # np.ndarray, (num_points, 3)
         self.points_err = points_err  # np.ndarray, (num_points,)
         self.points_rgb = points_rgb  # np.ndarray, (num_points, 3)
@@ -384,6 +398,16 @@ class Parser:
                 x_min, x_max = xs.min(), xs.max() + 1
                 mask = mask[y_min:y_max, x_min:x_max]
 
+                # TODO: Not too sure what the above code does
+                
+                # mask for fisheye cam
+                mask = np.zeros((height, width), dtype=np.uint8)
+                mask = cv2.circle(
+                    mask, (int(cx), int(cy)), min(int(cx), int(cy)), 1, -1
+                )
+                mask = mask.astype(np.bool_)
+                # breakpoint()
+
                 K_undist = K.copy()
                 K_undist[0, 2] -= x_min
                 K_undist[1, 2] -= y_min
@@ -436,6 +460,7 @@ class Dataset:
         params = self.parser.params_dict[camera_id]
         camtoworlds = self.parser.camtoworlds[index]
         mask = self.parser.mask_dict[camera_id]
+        mask_im = self.parser.masks[index]
 
         if len(params) > 0:
             # Images are distorted. Undistort them.
@@ -464,6 +489,11 @@ class Dataset:
         }
         if mask is not None:
             data["mask"] = torch.from_numpy(mask).bool()
+        if mask_im is not None:
+            if "mask" not in data:
+                data["mask"] = torch.from_numpy(mask_im).bool()
+            else:
+                data["mask"] = (torch.from_numpy(mask_im) * data["mask"]).bool()
 
         if self.load_depths:
             # projected points to image plane to get depths

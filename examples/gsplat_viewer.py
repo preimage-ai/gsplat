@@ -31,8 +31,8 @@ class GsplatRenderTabState(RenderTabState):
     camera_model: Literal["pinhole", "ortho", "fisheye"] = "pinhole"
 
     # NEW — visibility toggle for camera frustums
-    show_cameras: bool = True
-    frustum_scale: float = 0.05
+    show_cameras: bool = False
+    frustum_scale: float = 0.03
 
 class GsplatViewer(Viewer):
     """
@@ -261,7 +261,7 @@ class GsplatViewer(Viewer):
                 frustum_scale_slider = server.gui.add_slider(            # ← new control
                     "Frustum Scale",
                     min=0.001,
-                    max=0.1,
+                    max=100,
                     step=0.001,
                     initial_value=self.render_tab_state.frustum_scale,
                     hint="Size of each camera frustum (world units).",
@@ -317,21 +317,14 @@ class GsplatViewer(Viewer):
         for i, cam in enumerate(self._cameras):
             name = f"/cameras/cam_{i:04d}"
 
-            scene.add_frame(
-                name=name,
-                wxyz=cam["wxyz"],
-                position=cam["position"],
-                axes_length=scale * 0.04,
-                axes_radius=scale * 0.002,
-                visible=self.render_tab_state.show_cameras,
-            )
-
             h = scene.add_camera_frustum(
                 name=f"{name}/frustum",
                 fov=cam["fov"],
                 aspect=cam["aspect"],
                 scale=scale,                           # ← here too
                 line_width=1.8,
+                position=cam["position"],
+                wxyz=cam["wxyz"],
                 color=(255, 180, 0),
                 visible=self.render_tab_state.show_cameras,
             )

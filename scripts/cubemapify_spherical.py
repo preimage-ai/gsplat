@@ -144,8 +144,8 @@ def main(args):
 
     image_id_count = 0
     for k, image in tqdm(images.items()):
-        if image.id < 114 or image.id > 154:
-            continue
+        # if image.id < 114 or image.id > 154:
+        #     continue
         # load panorama once
         pano = cv2.imread(str(Path(img_dir)/ image.name), cv2.IMREAD_UNCHANGED)
         if pano is None:
@@ -170,7 +170,7 @@ def main(args):
             face_id = f"{Path(image.name).stem}_{face}{Path(image.name).suffix}"
             image_id = image_id_count #len(FACE_ROT.values())*k + FACE_IDX[face]
             image_id_count += 1
-            print (f"Writing {image_id} originating from {k} ({image.name}) to {face_id}")
+            # print (f"Writing {image_id} originating from {k} ({image.name}) to {face_id}")
             new_qvec, new_tvec = rotate_image(image.qvec, image.tvec, face)
             new_xys = []
             new_point3D_ids = []
